@@ -66,7 +66,7 @@ ratings = sample_df
 # -------------------------------
 # Cleaned Genre Breakdown
 # -------------------------------
-st.subheader("Genre Breakdown (Cleaned)")
+st.subheader("Genre Breakdown")
 cleaned_genres = (
     df["genres"]
     .apply(lambda x: re.sub(r"[^a-zA-Z|]", "", x))
