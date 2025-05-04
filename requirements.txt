@@ -1,6 +1,40 @@
-joblib==1.4.2
-pandas==2.2.3
-Requests==2.32.3
-scikit_learn==1.6.1
-scipy==1.15.2
-streamlit==1.45.0
+Movie Recommendation System
+──────────────────────────────────────────────────────────────
+
+Dataset:
+────────────────────
+[Raw Dataset]
+• https://www.kaggle.com/datasets/rounakbanik/the-movies-dataset?resource=download
+• Located in the `/dataset/` folder
+
+[Cleaned Data + Models (pkl files)]
+• https://drive.google.com/drive/folders/1iDRy32RWSj8vGPPqZqFt0pcObVgfhYHS?usp=sharing
+
+
+How to Run:
+────────────────────
+Using terminal:
+
+1. For the main recommender:
+   python -m streamlit run main.py
+
+2. For dataset overview:
+   python -m streamlit run data_info.py
+
+Or run directly from Streamlit Cloud:
+
+• Main App:
+  https://movie-recommender-teno.streamlit.app/
+
+• Dataset Overview:
+  https://movie-recommender-datainfo.streamlit.app/
+
+
+Dependencies:
+────────────────────
+joblib==1.4.2  
+pandas==2.2.3  
+requests==2.32.3  
+scikit_learn==1.6.1  
+scipy==1.15.2  
+streamlit==1.45.0  
