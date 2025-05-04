@@ -2,9 +2,11 @@ import streamlit as st
 import joblib
 import pandas as pd
 import requests
+import urllib.request
 
 from scipy.sparse import csr_matrix
 from sklearn.metrics.pairwise import cosine_similarity
+
 
 # -------------------------------
 # Poster & Trailer Helpers
@@ -33,58 +35,64 @@ def fetch_trailer(title: str) -> str:
         return f"https://www.youtube.com/watch?v={video_id}"
     except (KeyError, IndexError):
         return "https://www.youtube.com/results?search_query=" + query.replace(" ", "+")
+    
 
+# Function to generate Google Drive download URL
+def gdrive_url(file_id):
+    return f"https://drive.google.com/uc?id={file_id}"
 
 # -------------------------------
-# Collaborative-Filtering Data
+# Load Collaborative-Filtering Data
 # -------------------------------
 @st.cache_data
-def load_cf_data(path="filtered_ratings.csv"):
-    ratings = pd.read_csv(path)
-    ui      = ratings.pivot(index="userId", columns="movieId", values="rating").fillna(0)
-    sim     = cosine_similarity(csr_matrix(ui.values), dense_output=False)
+def load_cf_data():
+    csv_ratings_id = "1SPcoSXprRZxAp0PD0v5Q83vz0lyryl6t"
+    ratings = pd.read_csv(gdrive_url(csv_ratings_id))
+    ui = ratings.pivot(index="userId", columns="movieId", values="rating").fillna(0)
+    sim = cosine_similarity(csr_matrix(ui.values), dense_output=False)
     return ratings, ui, sim
 
 sample_df, user_item_matrix, cosine_sim_user_item = load_cf_data()
 
-
-
-
 # -------------------------------
 # Load Movies Metadata
 # -------------------------------
-def load_movies(path="filtered_movies_metadata.csv"):
-    df = pd.read_csv(path)
-    # <-- add this line:
-    df = df.rename(columns={'id':'movieId'})
-    df[['title','genres','content']] = df[['title','genres','content']].fillna('Unknown')
+@st.cache_data
+def load_movies():
+    csv_movies_id = "1oRPpwyts6IDy8x7nZk5INqYnEu1GbxNV"
+    df = pd.read_csv(gdrive_url(csv_movies_id))
+    df = df.rename(columns={'id': 'movieId'})
+    df[['title', 'genres', 'content']] = df[['title', 'genres', 'content']].fillna('Unknown')
     return df
 
 movies = load_movies()
-
 
 # -------------------------------
 # Load Models (cached per-approach)
 # -------------------------------
 @st.cache_resource
 def load_models(opt: str):
-    if opt=="Approach 1: KNN + Linear Regression":
+    def fetch_model(file_id, filename):
+        url = gdrive_url(file_id)
+        urllib.request.urlretrieve(url, filename)
+        return joblib.load(filename)
+
+    if opt == "Approach 1: KNN + Linear Regression":
         return {
-            "clf": joblib.load("knn_classifier.pkl"),
-            "reg": joblib.load("linear_regressor.pkl")
+            "clf": fetch_model("1eAYWc2gj2ewZWoe0sUfW3wLsafTzGx3u", "knn_classifier.pkl"),
+            "reg": fetch_model("1mtGpS68E8cMaOxMrnS1hJ4a-pyXGf_o9", "linear_regressor.pkl")
         }
-    elif opt=="Approach 2: SVM":
+    elif opt == "Approach 2: SVM":
         return {
-            "clf": joblib.load("svm_classifier.pkl"),
-            "reg": joblib.load("svm_regressor.pkl")
+            "clf": fetch_model("1uow-Y5Zl6yIzC-98NH5y1GnsBY2fwALx", "svm_classifier.pkl"),
+            "reg": fetch_model("1egPdoYf-Kj-KLQsCJ0Mmu55FLvLsv84U", "svm_regressor.pkl")
         }
     else:
         return {
-            "clf":   joblib.load("random_forest_classifier.pkl"),
-            "reg_rf":joblib.load("random_forest_regressor.pkl"),
-            "reg_gb":joblib.load("gb_regressor.pkl")
+            "clf": fetch_model("1yUWrsOEXXZDtNywE4Z-k7PIj-DN5x1ew", "random_forest_classifier.pkl"),
+            "reg_rf": fetch_model("1LqaHauqV-Jjr5ziVByZCKYpAh8a1uam-", "random_forest_regressor.pkl"),
+            "reg_gb": fetch_model("15-eRYBkmzO7Gy0bQXU7rqoX09bhVnOmw", "gb_regressor.pkl")
         }
-
 
 # -------------------------------
 # Recommendation Function
