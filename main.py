@@ -6,6 +6,10 @@ import urllib.request
 
 from scipy.sparse import csr_matrix
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import CountVectorizer
+
 
 
 # -------------------------------
@@ -91,6 +95,27 @@ if movies is None or movies.empty:
 # -------------------------------
 # Load Models (cached per-approach)
 # -------------------------------
+# === Content-Based Vectors (TF-IDF + SVD) ===
+svd_vectorizer = TfidfVectorizer(stop_words='english')
+svd_matrix = svd_vectorizer.fit_transform(movies['content'])
+svd = TruncatedSVD(n_components=20, random_state=42)
+svd_reduced = svd.fit_transform(svd_matrix)
+cosine_sim_svd = cosine_similarity(svd_reduced, dense_output=False)
+
+# === Title Similarity ===
+tfidf_title_vectorizer = TfidfVectorizer(stop_words='english')
+title_matrix = tfidf_title_vectorizer.fit_transform(movies['title'])
+cosine_sim_title = cosine_similarity(title_matrix, dense_output=False)
+
+# === Genre Similarity ===
+genre_vectorizer = CountVectorizer(tokenizer=lambda s: s.split('|'))
+genre_matrix = genre_vectorizer.fit_transform(movies['genres'].fillna(''))
+cosine_sim_genre = cosine_similarity(genre_matrix, dense_output=False)
+
+
+# -------------------------------
+# Load Models (cached per-approach)
+# -------------------------------
 @st.cache_resource
 def load_models(opt: str):
     def fetch_model(file_id, filename):
@@ -115,6 +140,15 @@ def load_models(opt: str):
             "reg_gb": fetch_model("15-eRYBkmzO7Gy0bQXU7rqoX09bhVnOmw", "gb_regressor.pkl")
         }
 
+
+# TF-IDF + SVD for content-based filtering
+tfidf_content_vectorizer = TfidfVectorizer(stop_words='english')
+tfidf_content_matrix = tfidf_content_vectorizer.fit_transform(movies['content'])  # 'content' column must exist
+
+svd = TruncatedSVD(n_components=100)
+svd_matrix = svd.fit_transform(tfidf_content_matrix)
+cosine_sim_svd = cosine_similarity(svd_matrix)
+
 # -------------------------------
 # Recommendation Function
 # -------------------------------
@@ -125,7 +159,6 @@ def recommend_with_model(
     genres: list[str] = None,
     avg_range: tuple[float,float] = None
 ) -> pd.DataFrame:
-
     m = load_models(model_option)
     df = movies.copy()
     genres = genres or []
@@ -139,18 +172,15 @@ def recommend_with_model(
         nbrs    = sims.argsort()[::-1][1:21]
         neigh_df = user_item_matrix.iloc[nbrs]
         liked_ids = set(neigh_df.columns[(neigh_df >= 2.5).any(axis=0)])
-        filtered = sub_df[sub_df['movieId'].isin(liked_ids)]
-        return filtered
+        return sub_df[sub_df['movieId'].isin(liked_ids)]
 
-
-
-    # 1) build title‐matches
+    # 1) Loose title match (for fallback/extra use)
     title_matches = (
         df[df['title'].str.lower().str.contains(movie_title.lower())]
           .sort_values('weighted_rating', ascending=False)
     ) if movie_title else pd.DataFrame()
 
-    # 2) Approach 1 shortcut
+    # 2) Quick shortcut for KNN if title_matches already good
     if movie_title and len(title_matches) >= 10 \
        and model_option == "Approach 1: KNN + Linear Regression":
         tm = title_matches.copy()
@@ -161,22 +191,27 @@ def recommend_with_model(
             tm = tm[tm['genres'].str.contains(pat)]
         return tm.head(20)
 
-    # 3) Approach 3 shortcut
-    if movie_title and len(title_matches) >= 10 \
-       and model_option == "Approach 3: Random Forest + GBM":
-        tm = title_matches.copy()
-        if lo_avg is not None:
-            tm = tm[(tm['vote_average'] >= lo_avg) & (tm['vote_average'] <= hi_avg)]
-        if genres:
-            pat = "|".join(genres)
-            tm = tm[tm['genres'].str.contains(pat)]
-        return cf_boost(tm, user_id).sort_values('weighted_rating', ascending=False).head(20)
+    # 3) Exact title match or fallback using SVD content similarity
+    exact = df[df['title'].str.lower() == movie_title.lower()] if movie_title else pd.DataFrame()
 
-    # 4) exact → model → candidates
-    exact = (
-        df[df['title'].str.lower() == movie_title.lower()]
-        if movie_title else pd.DataFrame()
-    )
+    if exact.empty and movie_title:
+        input_vec = tfidf_content_vectorizer.transform([movie_title])
+        reduced = svd.transform(input_vec)
+        sim_scores = cosine_similarity(reduced, svd_matrix).flatten()
+        top_idx = sim_scores.argsort()[::-1][0]
+        exact = df.iloc[[top_idx]]
+
+    # 4) Get top 10 similar (content-based using SVD)
+    if not exact.empty:
+        idx = exact.index[0]
+        sim_scores = cosine_sim_svd[idx].flatten()
+
+        top_indices = sim_scores.argsort()[::-1][1:11]
+        tfidf_matches = df.iloc[top_indices]
+    else:
+        tfidf_matches = pd.DataFrame()
+
+    # 5) Predict using model
     if exact.empty:
         candidates = title_matches.copy() if not title_matches.empty else df.copy()
     else:
@@ -187,68 +222,53 @@ def recommend_with_model(
         if model_option == "Approach 1: KNN + Linear Regression":
             pred = m["reg"].predict(feats)[0]
             lo, hi = max(pred-0.5,0), min(pred+0.5,10)
-
             if genres:
                 pat = "|".join(genres)
-                candidates = df[
-                    (df['vote_average'] >= lo) &
-                    (df['vote_average'] <= hi) &
-                    df['genres'].str.contains(pat, regex=True)
-                ]
+                candidates = df[(df['vote_average'] >= lo) & (df['vote_average'] <= hi) & df['genres'].str.contains(pat, regex=True)]
             else:
-                candidates = df[
-                    (df['vote_average'] >= lo) &
-                    (df['vote_average'] <= hi)
-                ]
+                candidates = df[(df['vote_average'] >= lo) & (df['vote_average'] <= hi)]
 
         elif model_option == "Approach 2: SVM":
             pred = m["reg"].predict(feats)[0]
             vc   = int(row['vote_count'])
             lo, hi = int(vc*0.8), int(vc*1.2)
-
             if genres:
                 pat = "|".join(genres)
-                candidates = df[
-                    (df['vote_count']>=lo)&(df['vote_count']<=hi)&
-                    df['genres'].str.contains(pat, regex=True)
-                ]
+                candidates = df[(df['vote_count'] >= lo) & (df['vote_count'] <= hi) & df['genres'].str.contains(pat, regex=True)]
             else:
-                candidates = df[
-                    (df['vote_count']>=lo)&(df['vote_count']<=hi)
-                ]
+                candidates = df[(df['vote_count'] >= lo) & (df['vote_count'] <= hi)]
 
-
-        else:  # Approach 3 full RF+GBM path
+        else:  # Approach 3: Random Forest + GBM
             rf_p = m["reg_rf"].predict(feats)[0]
             gb_p = m["reg_gb"].predict(feats)[0]
             pred = (rf_p + gb_p) / 2
-            lo, hi = max(pred-0.5,0), min(pred+0.5,10)
-            candidates = df[
-                (df['weighted_rating']>=lo)&(df['weighted_rating']<=hi)
-            ]
+            lo, hi = max(pred-0.5, 0), min(pred+0.5, 10)
+            candidates = df[(df['weighted_rating'] >= lo) & (df['weighted_rating'] <= hi)]
             candidates = cf_boost(candidates, user_id)
-            candidates = candidates[candidates['rating_class'] == cls]
+            if 'rating_class' in candidates.columns:
+                candidates = candidates[candidates['rating_class'] == cls]
 
-    # enforce CF one more time on full RF+GBM path
+    # CF boost again for Approach 3
     if model_option == "Approach 3: Random Forest + GBM":
         candidates = cf_boost(candidates, user_id)
 
-    # 5) shared post-filters
+    # 6) Shared filters
     if lo_avg is not None:
-        candidates = candidates[
-            (candidates['vote_average']>=lo_avg)&
-            (candidates['vote_average']<=hi_avg)
-        ]
+        candidates = candidates[(candidates['vote_average'] >= lo_avg) & (candidates['vote_average'] <= hi_avg)]
     if genres:
         pat = "|".join(genres)
         candidates = candidates[candidates['genres'].str.contains(pat)]
     min_votes = df['vote_count'].mean()
-    candidates = candidates[candidates['vote_count']>=min_votes]
+    candidates = candidates[candidates['vote_count'] >= min_votes]
 
-    # finally, always return a DataFrame (never None)
+    # 7) Merge TF-IDF and title matches
+    extra_titles = pd.concat([title_matches, tfidf_matches], ignore_index=True)
+    if 'movieId' in extra_titles.columns and 'movieId' in candidates.columns:
+        extra_titles = extra_titles[~extra_titles['movieId'].isin(candidates['movieId'])]
+    extra_titles = extra_titles.drop_duplicates('movieId').head(10)
+
+    candidates = pd.concat([candidates, extra_titles], ignore_index=True).drop_duplicates('movieId')
     return candidates.head(30)
-
-
 
 # -------------------------------
 # Sidebar + State + Reset
